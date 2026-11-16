@@ -482,4 +482,22 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# ── DomCoreERP additions ──
+# Dev secrets — never commit
 appsettings.Development.json
+appsettings.Local.json
+.env
+*.user
+
+# Rider / VS
+.idea/
+.vs/
+*.sln.DotSettings.user
+
+# Serilog local logs (app writes to src/DomCoreERP.API/Logs/)
+Logs/
+src/DomCoreERP.API/Logs/
+
+# EF local migrations bundle
+*-bundle.exe

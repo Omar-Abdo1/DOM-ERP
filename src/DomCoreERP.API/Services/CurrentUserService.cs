@@ -1,7 +1,6 @@
 using System.Security.Claims;
+using DomCoreERP.Core.Constants;
 using Microsoft.AspNetCore.Http;
-
-namespace DomCoreERP.API.Services;
 
 public class CurrentUserService : ICurrentUserService
 {
@@ -9,7 +8,6 @@ public class CurrentUserService : ICurrentUserService
 
     public CurrentUserService(IHttpContextAccessor http) => _http = http;
 
-    // No HttpContext → seeding, migrations, background jobs
     private bool IsSystemContext => _http.HttpContext is null;
 
     public Guid? UserId =>
@@ -28,7 +26,8 @@ public class CurrentUserService : ICurrentUserService
             ? id : null;
 
     public bool IsSuperAdmin =>
-        IsSystemContext || Role == "SuperAdmin";
+        IsSystemContext ||
+        (_http.HttpContext?.User.IsInRole(Roles.SuperAdmin) ?? false);   // ← uses constant + IsInRole
 
     public Guid? ResolvedCompanyId
     {
