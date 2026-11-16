@@ -12,7 +12,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DomCoreERP.Repository.Migrations
 {
     [DbContext(typeof(DomCoreContext))]
-    [Migration("20261116155013_Initial")]
+    [Migration("20261116172122_Initial")]
     partial class Initial
     {
         /// <inheritdoc />
@@ -38,7 +38,8 @@ namespace DomCoreERP.Repository.Migrations
 
                     b.Property<string>("ActorRole")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<Guid>("ActorUserId")
                         .HasColumnType("uniqueidentifier");
@@ -199,7 +200,8 @@ namespace DomCoreERP.Repository.Migrations
 
                     b.Property<string>("MovementType")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<decimal>("NewStock")
                         .HasPrecision(18, 4)
@@ -404,7 +406,8 @@ namespace DomCoreERP.Repository.Migrations
 
                     b.Property<string>("PaymentMethod")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<Guid>("ReceivedBy")
                         .HasColumnType("uniqueidentifier");
@@ -616,10 +619,6 @@ namespace DomCoreERP.Repository.Migrations
 
                     b.Property<bool>("PhoneNumberConfirmed")
                         .HasColumnType("bit");
-
-                    b.Property<string>("Role")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("SecurityStamp")
                         .HasColumnType("nvarchar(max)");
