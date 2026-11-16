@@ -1,5 +1,7 @@
 using System.Threading.RateLimiting;
 
+using DomCoreERP.API.ExtensionsMethod;
+using DomCoreERP.Core.Config;
 using DomCoreERP.Core.Entities.Email;
 
 using Microsoft.AspNetCore.Identity;
@@ -33,7 +35,9 @@ public class Program
             builder.Configuration["JWT:IssuerIP"]);
         
         
-        builder.Services.AddSwaggerAdvanced("TouristsAPI");
+        builder.Services.AddSwaggerAdvanced("DOM-ERP-API");
+        
+        builder.Services.Configure<SeedSettings>(builder.Configuration.GetSection("Seed"));
         
         builder.Services.AddCors(options =>
         {
@@ -113,7 +117,7 @@ public class Program
         
         var app = builder.Build();
         
-       // await app.UpdateDatabaseAsync();
+        await app.UpdateDatabaseAsync();
 
         app.UseMiddleware<ExceptionMiddleWare>(); // custom MiddleWare
 

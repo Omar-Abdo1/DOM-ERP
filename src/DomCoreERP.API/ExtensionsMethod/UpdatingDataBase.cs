@@ -1,35 +1,39 @@
-using DomCoreERP.Core.Entities;
 using DomCoreERP.Repository;
-
-using Microsoft.AspNetCore.Identity;
+using DomCoreERP.Repository.DataSeeding;
 using Microsoft.EntityFrameworkCore;
 
+using TouristsAPI;
 
-namespace TouristsAPI.ExtensionsMethod;
+namespace DomCoreERP.API.ExtensionsMethod;
 
 public static class UpdatingDataBase
 {
     public static async Task UpdateDatabaseAsync(this IApplicationBuilder app)
     {
         using var scope = app.ApplicationServices.CreateScope();
-        var Services = scope.ServiceProvider;
-        var LoggerFactory = Services.GetRequiredService<ILoggerFactory>();
+        var services = scope.ServiceProvider;
+        var logger = services.GetRequiredService<ILogger<Program>>();
+
         try
-        {           
-            var dbContext = Services.GetRequiredService<DomCoreContext>();
-            var userManger = Services.GetRequiredService<UserManager<User>>();
-            var roleManger = Services.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
-            await dbContext.Database.MigrateAsync();
-            
-            // Seed data if necessary
-            // var seeder = new DbSeeder(dbContext, userManger, roleManger);
-            // await seeder.SeedAsync();
-            // await AdminSeeder.SeedUsersAsync(userManger);
+        {
+            logger.LogInformation("Applying migrations...");
+            await services.GetRequiredService<DomCoreContext>().Database.MigrateAsync();
+
+            logger.LogInformation("Seeding roles...");
+            await services.GetRequiredService<RoleSeeder>().SeedAsync();       // 1st
+
+            logger.LogInformation("Seeding Super Admin...");
+            await services.GetRequiredService<AdminSeeder>().SeedAsync();      // 2nd
+
+            logger.LogInformation("Seeding demo data...");
+            await services.GetRequiredService<DbSeeder>().SeedAsync();         // 3rd
+
+            logger.LogInformation("Database ready.");
         }
         catch (Exception ex)
         {
-            var Logger = LoggerFactory.CreateLogger<Program>();
-            Logger.LogError(ex, "An error occurred while migrating the database.");
+            logger.LogError(ex, "Error during migration or seeding.");
+            throw;   // crash the app — never start with a broken DB silently
         }
     }
 }

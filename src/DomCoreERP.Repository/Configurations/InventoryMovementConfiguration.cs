@@ -13,6 +13,7 @@ public class InventoryMovementConfiguration : IEntityTypeConfiguration<Inventory
 
         b.Property(m => m.ReferenceType).HasMaxLength(50);
         b.Property(m => m.Notes).HasMaxLength(500);
+        b.Property(m => m.MovementType).HasMaxLength(50).IsRequired();
 
         // ── FKs ──
         b.HasOne(m => m.Company)

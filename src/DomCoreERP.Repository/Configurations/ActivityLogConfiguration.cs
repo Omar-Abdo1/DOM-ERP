@@ -13,6 +13,7 @@ public class ActivityLogConfiguration : IEntityTypeConfiguration<ActivityLog>
         b.Property(a => a.Action).HasMaxLength(100).IsRequired();
         b.Property(a => a.EntityType).HasMaxLength(100).IsRequired();
         b.Property(a => a.Description).HasMaxLength(1000);
+        b.Property(a => a.ActorRole).HasMaxLength(100).IsRequired();
 
         // ── FK: ActivityLog → ActorUser ──
         b.HasOne(a => a.ActorUser)

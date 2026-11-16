@@ -8,7 +8,7 @@ public class ActivityLog : BaseEntity
     public Guid ActorUserId { get; set; }
     public User ActorUser { get; set; } = null!;
 
-    public UserRole ActorRole { get; set; }
+    public string ActorRole { get; set; }
 
     // Nullable: system-wide operations (company creation, login before company set)
     public Guid? CompanyId { get; set; }

@@ -13,6 +13,7 @@ public class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         b.Property(p => p.Amount).HasPrecision(18, 2);
         b.Property(p => p.Reference).HasMaxLength(100);
         b.Property(p => p.Notes).HasMaxLength(2000);
+        b.Property(p => p.PaymentMethod).HasMaxLength(50).IsRequired();
 
         b.Property(p => p.RowVersion).IsRowVersion();
 

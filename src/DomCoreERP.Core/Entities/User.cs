@@ -13,7 +13,6 @@ public class User : IdentityUser<Guid>, IEntity
     public Company? Company { get; set; }
 
     public string FullName { get; set; } = null!;
-    public UserRole Role { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime? LastLoginAt { get; set; }
 
