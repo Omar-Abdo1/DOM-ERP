@@ -19,7 +19,7 @@ Two independent companies operate under one system with strict data isolation. A
 - [Demo accounts](#demo-accounts)
 - [API documentation](#api-documentation)
 - [Multi-tenancy model](#multi-tenancy-model)
-- [Testing](#testing)
+- [Testing](#DomCoreERP.Tests)
 - [Important decisions](#important-decisions)
 - [Project structure](#project-structure)
 - [Known limitations / post-MVP backlog](#known-limitations--post-mvp-backlog)
@@ -353,32 +353,242 @@ The spec's requirement — *"The system must never disguise the Super Admin's id
 
 ---
 
-## Testing
+## DomCoreERP.Tests
 
-### Setup
+Integration and regression test suite for **DOM-ERP** (`DomCoreERP.API` / `DomCoreERP.Service` / `DomCoreERP.Repository`), built with **xUnit**, **FluentAssertions**, and `WebApplicationFactory<Program>` against a real **SQL Server** instance.
 
-```bash
-export DOMCORETEST_SA_PASSWORD='your_sa_password'
-dotnet test tests/DomCoreERP.Tests
-```
-
-Tests use `WebApplicationFactory<Program>` — they run against a **real ASP.NET Core pipeline** with a **fresh SQL Server test DB** per test collection (auto-dropped on dispose).
-
-### Coverage
-
-| Suite | Tests | Proves |
-|---|---|---|
-| `MultiTenancy/ProductsIsolationTests` | 6 | Read scoping, cross-tenant 404, DTO CompanyId ignored, header spoof ignored, Employee role |
-| `MultiTenancy/CustomersIsolationTests` | 3 | Read scoping, cross-tenant 404, Employee role |
-| `MultiTenancy/UsersIsolationTests` | 4 | List scoping, cross-tenant 404, DTO coercion, Employee 403 |
-| `MultiTenancy/InvoicesAndPaymentsIsolationTests` | 5 | Invoice list scoping, cross-tenant 404, cross-tenant pay, cross-tenant customer/product in invoice |
-| `MultiTenancy/SuperAdminWorkspaceTests` | 5 | No-header sees-all, header scoping, real-actor preservation in activity log, system-log isolation |
-| `BusinessLogic/InvoiceTests` | 5 | Totals math, draft no-deduct, issue deducts, qty validation, cancellation restores |
-| `BusinessLogic/PaymentTests` | 5 | Partial, full, overpay rejected, draft rejected, cancel-with-payments rejected |
-
-**Total: 33 tests.**
+**46 tests** covering multi-tenancy isolation, SuperAdmin workspace scoping, authentication, invoicing, payments, and inventory guardrails.
 
 ---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Running the Tests](#running-the-tests)
+- [Test Suite Overview](#test-suite-overview)
+- [What Is Tested & How DOM-ERP Handles It](#what-is-tested--how-dom-erp-handles-it)
+- [Detailed Test Reference](#detailed-test-reference)
+
+---
+
+## Prerequisites
+
+- .NET SDK (matching the solution's target framework)
+- A SQL Server instance reachable at `localhost,1433`
+- The `sa` password exposed through the `DOMCORETEST_SA_PASSWORD` environment variable
+
+## Running the Tests
+
+```bash
+export DOMCORETEST_SA_PASSWORD="YourSaPasswordHere"
+dotnet test tests/DomCoreERP.Tests/DomCoreERP.Tests.csproj
+```
+
+> **Note:** All test classes use `[Collection("TestApi")]` and share a single `TestWebApplicationFactory` database per test run. The temporary test database is dropped automatically on disposal. Because tests share a live database, tests that create records use unique `Guid` suffixes and assert membership/invariants rather than brittle hardcoded counts.
+
+---
+
+## Test Suite Overview
+
+| Test Class | Focus Area | Tests |
+| --- | --- | :---: |
+| `ProductsIsolationTests` | Product tenant isolation, role checks & spoofing guards | 6 |
+| `CustomersIsolationTests` | Customer tenant isolation & role authorization | 3 |
+| `InvoicesAndPaymentsIsolationTests` | Cross-tenant invoice & payment isolation | 5 |
+| `UsersIsolationTests` | User directory isolation, creation rules & role checks | 4 |
+| `SuperAdminWorkspaceTests` | SuperAdmin global vs. workspace scoping & audit logs | 5 |
+| `WorkspaceActorAndAuthTests` | Platform actor joins, `/auth/me`, logout audit & email uniqueness | 4 |
+| `MvpGuardrailTests` | High-risk MVP regression & state-machine guardrails | 9 |
+| `InvoiceTests` | Draft totals, stock deduction, cancellation & stock validation | 5 |
+| `PaymentTests` | Partial/full payments, overpayment & lifecycle payment guards | 5 |
+| **Total** | | **46** |
+
+---
+
+## What Is Tested & How DOM-ERP Handles It
+
+### 1. Multi-Tenancy & Global Query Filters
+
+**Tenant data isolation** (`ProductsIsolationTests`, `CustomersIsolationTests`, `InvoicesAndPaymentsIsolationTests`, `UsersIsolationTests`)
+
+- **Tested:** Company admins and employees only see resources from their own company. Requesting another company's product, customer, invoice, or user by ID returns `404 NotFound`. Employees are blocked (`403 Forbidden`) from restricted management/creation endpoints.
+- **Implementation:** `DomCoreContext.OnModelCreating` configures EF Core global query filters (`HasQueryFilter`) on tenant-scoped entities (`Product`, `Customer`, `Invoice`, `Payment`, `InventoryMovement`, `User`, `ActivityLog`) based on `ICurrentUserService`.
+
+**Spoofing & write-target protection** (`ProductsIsolationTests`, `UsersIsolationTests`)
+
+- **Tested:** Non-SuperAdmin users cannot escalate into another tenant via a forged `X-Company-Id` header or by passing another `CompanyId` in a request DTO.
+- **Implementation:** `CurrentUserService.ResolvedCompanyId` only reads `X-Company-Id` when `IsSuperAdmin` is `true` and the user is authenticated; otherwise it falls back to the user's own `CompanyId` claim. `ResolveCompanyIdForWrite(...)` enforces tenant ownership on writes.
+
+**SuperAdmin workspace scoping** (`SuperAdminWorkspaceTests`, `MvpGuardrailTests`)
+
+- **Tested:** A SuperAdmin without `X-Company-Id` sees cross-tenant records and gets `400 BadRequest` on `/api/dashboard/company`, which requires an explicit company. With `X-Company-Id` set, reads and writes are scoped to that company and other companies' entities return `404 NotFound`.
+- **Implementation:** When `IsSuperAdmin && ResolvedCompanyId == null`, filters allow system-wide access; when `ResolvedCompanyId` is set, filters scope to that company. `DashboardService` throws a `400` `ApiException` if no company context is resolved.
+
+### 2. Platform Actor Lookups & Cross-Tenant Edge Cases
+
+**Preserving real actor identity inside a workspace**
+
+- **Tested:** When a SuperAdmin (`CompanyId = null`) acts inside a company workspace — creating products, issuing invoices, recording payments, generating inventory movements — `ActivityLog`, `Invoice`, `Payment`, and `InventoryMovement` preserve the `SUPERADMIN` role, the workspace tenant, and the actor's name without dropping rows during `User` joins.
+- **Implementation:** The `User` global query filter includes `|| u.CompanyId == null`, so foreign-key joins (`ActorUser`, `CreatedByUser`, `ReceivedByUser`) still resolve platform accounts. `UserService.GetPagedAsync`/`GetByIdAsync` explicitly restrict tenant user listings so platform users don't leak into company lists. `ActivityLogService.GetPagedAsync` uses `.IgnoreQueryFilters()` and applies the `ActivityLog` tenant filter manually.
+
+**Authenticated profile access with workspace header**
+
+- **Tested:** A SuperAdmin with `X-Company-Id` set can still call `GET /api/auth/me`.
+- **Implementation:** `AuthService.GetCurrentUserAsync` resolves the user without being blocked by a workspace company filter.
+
+**Global email uniqueness & per-company SKU uniqueness**
+
+- **Tested:** Creating a user with an email used in another tenant returns `409 Conflict`. Duplicate SKUs are rejected (`409`) within a company but allowed across companies (`201`).
+- **Implementation:** `UserService.CreateAsync` checks normalized email across all tenants via `.IgnoreQueryFilters()`; `ProductService.CreateAsync` checks SKU uniqueness scoped to `companyId`.
+
+**Logout audit logging**
+
+- **Tested:** Logging out records a `Logout` `ActivityLog` entry under the user's company.
+- **Implementation:** `AuthService.LogoutAsync` loads the refresh token and its user (`.IgnoreQueryFilters()`) and logs `companyId: token.User.CompanyId`.
+
+### 3. Business Logic, Stock & Financial Invariants
+
+**Invoice totals & draft vs. issued behavior**
+
+- **Tested:** Draft creation calculates `Subtotal`, `Total` (`Subtotal - Discount + Tax`), `PaidAmount = 0`, `RemainingAmount = Total`, status `Draft`, and does not deduct stock. Duplicate product lines exceeding combined stock are rejected (`400`).
+- **Implementation:** `InvoiceService.CreateDraftAsync` validates customer/product state and aggregates requested quantities per `ProductId` before persisting.
+
+**Stock deduction, cancellation & immutability**
+
+- **Tested:** Issuing deducts stock; cancelling restores it; deleting an issued invoice is rejected (`409`); negative stock adjustments below zero are rejected (`400`).
+- **Implementation:** `InvoiceService.IssueAsync` and `CancelAsync` run inside `RetryService.ExecuteOnConflictAsync` to handle optimistic concurrency (`RowVersion`) and record `InventoryMovement` entries atomically with stock updates.
+
+**Payments: partial, full & overpayment guards**
+
+- **Tested:** Partial payments set `PartiallyPaid`; full payment sets `Paid` with `RemainingAmount = 0`; paying a `Draft` invoice, overpaying, or paying an already-`Paid` invoice is rejected (`400`); cancelling an invoice with payments is rejected (`409`).
+- **Implementation:** `PaymentService.RecordAsync` validates invoice status and remaining balance inside the retry/concurrency loop and updates `Payment` and `Invoice` in a single `SaveChanges` call.
+
+**Refresh token rotation & company lifecycle**
+
+- **Tested:** Refreshing rotates the token and replaying the old one returns `401`. Deactivating a company blocks its users from logging in (`401`); reactivating restores login (`200`).
+- **Implementation:** `AuthService.RefreshAsync` detects reuse of `"Rotated on refresh"` tokens and revokes live tokens. `CompanyService.DeactivateAsync`/`ActivateAsync` toggle `Company.Status` and revoke active refresh tokens on deactivation.
+
+---
+
+## Detailed Test Reference
+
+<details>
+<summary><strong>1. ProductsIsolationTests (6)</strong> — <code>MultiTenancy/ProductsIsolationTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 1 | `AdminA_ListsProducts_SeesOnlyCompanyA` | Company A admin sees A's seeded products (`iPhone 15`, `AirPods Pro`, `iPad Air`), not B's (`Samsung S24`, `Galaxy Buds`) | Global query filter on `Product` using `ResolvedCompanyId ?? CompanyId` |
+| 2 | `AdminB_ListsProducts_SeesOnlyCompanyB` | Company B admin sees only B's products | Same filter scoped to Company B |
+| 3 | `AdminA_CannotReadCompanyBProduct_ReturnsNotFound` | Fetching B's product by ID as A returns `404` | `ProductService.GetByIdAsync` throws `NotFoundException`, avoiding existence leaks |
+| 4 | `AdminA_CannotCreateProductInCompanyB_BySettingDtoCompanyId` | Payload `CompanyId = CompanyB` still creates under `CompanyA` (`201`) | `ResolveCompanyIdForWrite(...)` ignores non-SuperAdmin `dto.CompanyId` |
+| 5 | `AdminA_CannotSpoofXCompanyIdHeader_ToSeeCompanyB` | `X-Company-Id: CompanyB` with A's token is ignored | `ResolvedCompanyId` reads the header only for SuperAdmin |
+| 6 | `Employee_CannotCreateProduct_ReturnsForbidden` | Employee `POST /api/products` returns `403` | Role/policy authorization on creation |
+
+</details>
+
+<details>
+<summary><strong>2. CustomersIsolationTests (3)</strong> — <code>MultiTenancy/CustomersIsolationTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 7 | `AdminA_ListsCustomers_SeesOnlyOwnCompany` | A sees `Mohamed Ahmed`, not B's `Khaled Ibrahim` | Global query filter on `Customer` |
+| 8 | `AdminA_CannotReadCompanyBCustomer_ReturnsNotFound` | Cross-tenant customer fetch returns `404` | `CustomerService.GetByIdAsync` respects the filter |
+| 9 | `Employee_CannotCreateCustomer_ReturnsForbidden` | Employee `POST /api/customers` returns `403` | Authorization restricts creation to admin roles |
+
+</details>
+
+<details>
+<summary><strong>3. InvoicesAndPaymentsIsolationTests (5)</strong> — <code>MultiTenancy/InvoicesAndPaymentsIsolationTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 10 | `AdminB_ListsInvoices_DoesNotSeeCompanyAInvoices` | B's invoice list excludes A's issued invoice | Global query filter on `Invoice` |
+| 11 | `AdminB_CannotReadCompanyAInvoiceById_ReturnsNotFound` | Cross-tenant invoice fetch returns `404` | `InvoiceService.GetByIdAsync` applies tenant filter |
+| 12 | `AdminB_CannotPayCompanyAInvoice_ReturnsNotFound` | Paying A's invoice as B returns `404` | `PaymentService.RecordAsync` looks up invoice via filtered repository |
+| 13 | `AdminA_CannotUseCompanyBCustomerInInvoice` | Invoice with B's customer ID returns `404` | `CreateDraftAsync` validates `c.Id == dto.CustomerId && c.CompanyId == companyId` |
+| 14 | `AdminA_CannotUseCompanyBProductInInvoice` | Invoice with B's product ID returns `404` | `CreateDraftAsync` loads products scoped to `companyId` |
+
+</details>
+
+<details>
+<summary><strong>4. UsersIsolationTests (4)</strong> — <code>MultiTenancy/UsersIsolationTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 15 | `AdminA_ListsUsers_SeesOnlyCompanyA` | A sees only `@companya.com` users; no platform (`CompanyId = null`) or other-tenant users | `UserService.GetPagedAsync` filters `u.CompanyId == targetCompanyId` for non-global admins |
+| 16 | `AdminA_CannotReadAdminB_ReturnsNotFound` | Fetching B's admin by ID returns `404` | `UserService.GetByIdAsync` enforces tenant boundaries |
+| 17 | `AdminA_CannotCreateEmployeeInCompanyB` | A cannot create an employee in B (`403` or forced into A) | `CreateAsync` restricts non-SuperAdmins to own company and `EMPLOYEE` role |
+| 18 | `Employee_CannotListUsers_ReturnsForbidden` | Employee `GET /api/users` returns `403` | User management requires admin/SuperAdmin |
+
+</details>
+
+<details>
+<summary><strong>5. SuperAdminWorkspaceTests (5)</strong> — <code>MultiTenancy/SuperAdminWorkspaceTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 19 | `SuperAdmin_NoHeader_SeesAllProducts` | Without `X-Company-Id`, products from A and B are visible | `IsSuperAdmin && ResolvedCompanyId == null` allows system-wide visibility |
+| 20 | `SuperAdmin_HeaderCompanyA_SeesOnlyCompanyA` | Header `CompanyA` shows only A's products | `ResolvedCompanyId` scopes the `Product` filter |
+| 21 | `SuperAdmin_HeaderCompanyB_SeesOnlyCompanyB` | Header `CompanyB` shows only B's products | Same, scoped to B |
+| 22 | `SuperAdmin_InsideWorkspace_PreservesRealActorInActivityLog` | Product created in workspace A logs `CompanyId = CompanyA`, `ActorRole = "SUPERADMIN"`, `ActorName = "Omar Abdo"` | `ActivityLogService.GetPagedAsync` uses `.IgnoreQueryFilters()` with a manual company filter |
+| 23 | `CompanyAdmin_CannotSeeSystemWideLogs` | Company A admin can't see `CompanyId = null` logs (e.g. company creation) | Non-SuperAdmin logs are filtered to own `CompanyId`, excluding `null` |
+
+</details>
+
+<details>
+<summary><strong>6. WorkspaceActorAndAuthTests (4)</strong> — <code>MultiTenancy/WorkspaceActorAndAuthTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 24 | `SuperAdmin_InsideWorkspace_PreservesActorAcrossPaymentAndCompanyDashboard` | In workspace A, SuperAdmin can issue an invoice, record a payment (`ReceivedByName == "Omar Abdo"`), fetch it, and load `/api/dashboard/company` | `User` filter includes `\|\| u.CompanyId == null` so joins still resolve platform accounts |
+| 25 | `SuperAdmin_WithWorkspaceHeader_CanCallAuthMe` | `GET /api/auth/me` works with workspace header (`CompanyId = null`) | `AuthService.GetCurrentUserAsync` isn't excluded by workspace filter |
+| 26 | `AdminA_Logout_LogsActivityUnderCompanyA` | Logout writes a `Logout` activity log under `CompanyA` | `LogoutAsync` loads token + user (`.IgnoreQueryFilters()`), logs `token.User.CompanyId` |
+| 27 | `AdminA_CannotCreateUserWithCompanyBEmail_ReturnsConflict` | Duplicate email across tenants returns `409` | `CreateAsync` checks normalized email with `.IgnoreQueryFilters()` |
+
+</details>
+
+<details>
+<summary><strong>7. MvpGuardrailTests (9)</strong> — <code>BusinessLogic/MvpGuardrailTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 28 | `SuperAdmin_ScopedToCompanyA_CannotReadCompanyBProductOrInvoiceById` | SuperAdmin scoped to A gets `404` for B's product | `ResolvedCompanyId` overrides system-wide access |
+| 29 | `SuperAdmin_WithoutWorkspaceHeader_GetsBadRequestOnCompanyDashboard` | `/api/dashboard/company` without header returns `400` | `DashboardService.ResolveTargetCompanyId()` throws `ApiException` |
+| 30 | `SameSku_AllowedAcrossDifferentCompanies_RejectedWithinSameCompany` | Same SKU: `409` within a company, `201` across companies | `ProductService.CreateAsync` checks SKU scoped to `companyId` |
+| 31 | `SuperAdmin_InsideWorkspace_CanRecordPaymentAndViewMovementsWithoutMissingActor` | `"Omar Abdo"` preserved on `PaymentDto.ReceivedByName` and `InventoryMovementDto.CreatedByName` | `User` filter allows `CompanyId == null` in FK joins |
+| 32 | `DuplicateProductLinesExceedingCombinedStock_RejectedOnDraftCreation` | Two lines for one product exceeding stock returns `400` | `CreateDraftAsync` groups by `ProductId` and sums quantities |
+| 33 | `IssuedInvoice_CannotBeDeletedOrEditedAsDraft_AndCannotPayTwiceWhenPaid` | Delete issued → `409`; full payment → `Paid`; further payment → `400` | `DeleteDraftAsync` rejects non-drafts; `RecordAsync` rejects `Paid` |
+| 34 | `NegativeStockAdjustmentBelowZero_IsRejected` | Adjustment below zero returns `400`, stock unchanged | `InventoryService.RecordAdjustmentAsync` validates `newStock < 0` |
+| 35 | `RefreshTokenRotation_RejectsReusedToken` | Replaying a rotated refresh token returns `401` | `AuthService.RefreshAsync` detects reuse, revokes live tokens |
+| 36 | `DeactivatingCompany_BlocksUserLogin_AndReactivatingRestoresIt` | Deactivated company → login `401`; reactivated → `200` | `DeactivateAsync` sets `Status = Inactive` and revokes tokens; `LoginAsync` requires `Active` |
+
+</details>
+
+<details>
+<summary><strong>8. InvoiceTests (5)</strong> — <code>BusinessLogic/InvoiceTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 37 | `CreateDraft_CalculatesTotalsCorrectly` | `Subtotal`, `Total`, `PaidAmount = 0`, `RemainingAmount = Total`, `Status = Draft` | Line and invoice totals computed with away-from-zero rounding |
+| 38 | `CreateDraft_DoesNotDeductStock` | Draft leaves `CurrentStock` unchanged | Deduction deferred to `IssueAsync` |
+| 39 | `IssueInvoice_DeductsStock` | Issuing decreases `CurrentStock` by invoiced quantity | `IssueAsync` deducts stock and records `Sale` movements in `RetryService.ExecuteOnConflictAsync` |
+| 40 | `CreateDraft_RejectsQuantityOverStock` | Quantity over stock returns `400` | `CreateDraftAsync` checks `CurrentStock < totalQty` |
+| 41 | `CancelIssuedInvoice_RestoresStock` | Cancelling restores prior stock | `CancelAsync` increments stock and records `CancellationRestore` movements atomically |
+
+</details>
+
+<details>
+<summary><strong>9. PaymentTests (5)</strong> — <code>BusinessLogic/PaymentTests.cs</code></summary>
+
+| # | Test | What it verifies | Mechanism |
+| :-: | --- | --- | --- |
+| 42 | `PartialPayment_UpdatesBalancesAndStatus` | Updates `PaidAmount`/`RemainingAmount`, status `PartiallyPaid` | Invoice and `Payment` updated in one transaction |
+| 43 | `FullPayment_MarksInvoicePaid` | `PaidAmount = Total`, `RemainingAmount = 0`, `Status = Paid` | Transition to `Paid` when `RemainingAmount == 0` |
+| 44 | `Overpayment_RejectedWith400` | Payment above `RemainingAmount` returns `400` | Checks `dto.Amount > invoice.RemainingAmount` |
+| 45 | `CannotPayDraftInvoice_Returns400` | Paying a `Draft` invoice returns `400` | Blocks `InvoiceStatus.Draft`, instructs to issue first |
+| 46 | `CannotCancelInvoiceWithPayments` | Cancelling an invoice with payments returns `409` | `CancelAsync` checks `PaidAmount > 0`, throws `ConflictException` |
+
+</details>
 
 ## Important decisions
 
